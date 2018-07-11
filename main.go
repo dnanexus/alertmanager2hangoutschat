@@ -28,18 +28,19 @@ var port = flag.String("port", "8080", "Port to listen to")
 var postPath = flag.String("path", "/alertmanager", "What path to listen to for POST requests")
 var logFormat = flag.String("log-format", "json", "can be empty string or json")
 var logLevel = flag.String("log-level", "info", "Can be one of:"+strings.Join(validLogLevels(), ","))
-var templateString = flag.String("template-string", messageTemplate, "template for the messages sent to hangouts chat")
 
-var messageTemplate = `<users/all>
-*{{.QueryParams.Get "env" | toUpper }}: {{ .Labels.alertname }} - {{.Status | toUpper}}*
-{{ range .Annotations.SortedPairs -}}
-{{ .Name }}: {{ .Value}}
-{{ end -}}
-Source: <{{ .GeneratorURL }}|Show in prometheus>
+var messageTemplate = `<users/all> : {{.Status | toUpper }} : {{.CommonAnnotations.summary}}
+
+{{.CommonAnnotations.description}}
 `
 
+var templateString *string
+
 func main() {
+	templateString = flag.String("template-string", messageTemplate, "template for the messages sent to hangouts chat")
 	flag.Parse()
+
+	log.Printf("Found message template: %s\n", *templateString)
 
 	lvl, err := logrus.ParseLevel(*logLevel)
 	if err != nil {
@@ -99,7 +100,7 @@ var defaultFuncs = template.FuncMap{
 }
 
 type alertData struct {
-	alerttemplate.Alert
+	alerttemplate.Data
 	QueryParams url.Values
 }
 
@@ -120,14 +121,12 @@ func handleAlert(c *gin.Context) {
 		return
 	}
 
-	for _, alert := range data.Alerts {
-		err := sendAlert(alert, c.Request.URL.Query())
-		if err != nil {
-			c.Error(err)
-			continue
-		}
-
+	var alert = data
+	err = sendAlert(alert, c.Request.URL.Query())
+	if err != nil {
+		c.Error(err)
 	}
+
 	if len(c.Errors.Errors()) > 0 {
 		for _, v := range c.Errors {
 			logrus.Error(v)
@@ -138,23 +137,23 @@ func handleAlert(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-func sendAlert(data alerttemplate.Alert, getParams url.Values) error {
+func sendAlert(data alerttemplate.Data, getParams url.Values) error {
 	hangoutsURL, err := url.Parse(getParams.Get("url"))
 	if err != nil {
 		return err
 	}
 
 	alert := &alertData{
-		Alert:       data,
+		Data:        data,
 		QueryParams: getParams,
 	}
-	tmpl, err := generateTemplate(messageTemplate, alert)
+	tmpl, err := generateTemplate(*templateString, alert)
 	if err != nil {
 		return err
 	}
 
 	textReq := &textRequest{
-		Text: tmpl,
+		tmpl,
 	}
 
 	buf := &bytes.Buffer{}
@@ -191,7 +190,7 @@ func sendChatMessage(u *url.URL, data io.Reader) error {
 }
 
 func generateTemplate(s string, data interface{}) (string, error) {
-	tmpl, err := template.New("").Funcs(defaultFuncs).Parse(messageTemplate)
+	tmpl, err := template.New("").Funcs(defaultFuncs).Parse(*templateString)
 	if err != nil {
 		return "", err
 	}
